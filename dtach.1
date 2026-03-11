@@ -160,8 +160,9 @@ forces a WINCH signal to be sent to the program.
 
 When creating a new session, the specified method is used as the default
 redraw method for the session. If not specified, the
-.I ctrl_l
-method is used.
+.I none
+method is used, which avoids injecting input or signals into the program
+on reattach.
 
 .TP
 .BI "\-b " "<size>"
@@ -181,6 +182,34 @@ suffixes for kilobytes and megabytes respectively (e.g.
 Set to
 .B 0
 to disable the scrollback buffer. The default size is 256K.
+
+.TP
+.BI "\-I " "<secs>"
+Sets the idle timeout in seconds. When the program running in the session
+has produced no output for
+.I <secs>
+seconds, the callback script specified by
+.B \-C
+is executed. Set to
+.B 0
+to disable (default). Both
+.B \-I
+and
+.B \-C
+must be specified for idle detection to be active.
+
+.TP
+.BI "\-C " "<script>"
+Sets the idle callback script. When the idle timeout fires, this script is
+executed via
+.BR /bin/sh .
+The script receives the following environment variables:
+.BR DTACH_IDLE_SECS " (seconds since last output),"
+.BR DTACH_IDLE_TIMEOUT " (the configured threshold),"
+.BR DTACH_SOCKET " (the session socket path), and"
+.BR DTACH_EVENT " (always \(lqidle\(rq)."
+A 30-second cooldown prevents repeated notifications. The callback is
+fire-and-forget; failures do not affect the session.
 
 .TP
 .B \-z

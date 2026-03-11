@@ -19,6 +19,7 @@
     Modifications Copyright (C) 2026 Bryan Mills
     - Added -b flag for configurable scrollback buffer size
     - Added scrollback_size global initialization
+    - Added -I flag for idle timeout and -C flag for idle callback script
     See https://github.com/bmills23/dtach-rev for details.
 */
 #include "dtach.h"
@@ -44,6 +45,10 @@ int no_suspend;
 int redraw_method = REDRAW_UNSPEC;
 /* The scrollback buffer size. */
 size_t scrollback_size = DEFAULT_SCROLLBACK_SIZE;
+/* The idle timeout in seconds. 0 means disabled. */
+int idle_timeout = 0;
+/* The idle callback script path. */
+char *idle_callback = NULL;
 
 /*
 ** The original terminal settings. Shared between the master and attach
@@ -131,6 +136,12 @@ usage()
 	       "  -b <size>\tSet the scrollback buffer size in bytes.\n"
 	       "\t\t  Suffixes K and M are supported (e.g. 256K, 1M).\n"
 	       "\t\t  Set to 0 to disable. Default: 256K.\n"
+	       "  -I <secs>\tSet the idle timeout in seconds. When the program\n"
+	       "\t\t  has produced no output for <secs> seconds, the\n"
+	       "\t\t  callback script is executed. 0 to disable (default).\n"
+	       "  -C <script>\tSet the idle callback script. Executed when the\n"
+	       "\t\t  idle timeout fires. Receives DTACH_IDLE_SECS,\n"
+	       "\t\t  DTACH_SOCKET, and DTACH_EVENT environment variables.\n"
 	       "  -z\t\tDisable processing of the suspend key.\n"
 	       "\nReport any bugs to <" PACKAGE_BUGREPORT ">.\n",
 		PACKAGE_VERSION, __DATE__, __TIME__);
@@ -295,6 +306,36 @@ main(int argc, char **argv)
 					return 1;
 				}
 				scrollback_size = (size_t)val;
+				break;
+			}
+			else if (*p == 'I')
+			{
+				++argv; --argc;
+				if (argc < 1)
+				{
+					printf("%s: No idle timeout "
+					       "specified.\n", progname);
+					printf("Try '%s --help' for more "
+					       "information.\n", progname);
+					return 1;
+				}
+				idle_timeout = atoi(argv[0]);
+				if (idle_timeout < 0)
+					idle_timeout = 0;
+				break;
+			}
+			else if (*p == 'C')
+			{
+				++argv; --argc;
+				if (argc < 1)
+				{
+					printf("%s: No callback script "
+					       "specified.\n", progname);
+					printf("Try '%s --help' for more "
+					       "information.\n", progname);
+					return 1;
+				}
+				idle_callback = argv[0];
 				break;
 			}
 			else

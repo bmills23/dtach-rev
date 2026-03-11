@@ -19,6 +19,8 @@
     Modifications Copyright (C) 2026 Bryan Mills
     - Added circular scrollback buffer for session reconnection context
     - Added OSC-delimited replay on client attach
+    - Changed default redraw method to REDRAW_NONE (safe reattach)
+    - Added idle detection with callback script execution (-I, -C flags)
     See https://github.com/bmills23/dtach-rev for details.
 */
 #include "dtach.h"
@@ -128,6 +130,50 @@ scrollback_replay(int fd)
 	}
 }
 
+/* Idle detection state for callback notifications. */
+static time_t last_pty_output;
+static int idle_notified;
+static time_t last_notify_time;
+#define IDLE_COOLDOWN 30
+
+/* Fork and exec the idle callback script with environment variables. */
+static void
+fire_idle_callback(int idle_secs)
+{
+	pid_t pid;
+	char secs_str[32];
+	int nullfd;
+
+	if (!idle_callback)
+		return;
+
+	pid = fork();
+	if (pid != 0)
+		return; /* Parent or error: fire-and-forget. */
+
+	/* Child — set up environment and exec the callback. */
+	snprintf(secs_str, sizeof(secs_str), "%d", idle_secs);
+	setenv("DTACH_IDLE_SECS", secs_str, 1);
+	snprintf(secs_str, sizeof(secs_str), "%d", idle_timeout);
+	setenv("DTACH_IDLE_TIMEOUT", secs_str, 1);
+	setenv("DTACH_SOCKET", sockname, 1);
+	setenv("DTACH_EVENT", "idle", 1);
+
+	/* Redirect stdio to /dev/null. */
+	nullfd = open("/dev/null", O_RDWR);
+	if (nullfd >= 0)
+	{
+		dup2(nullfd, 0);
+		dup2(nullfd, 1);
+		dup2(nullfd, 2);
+		if (nullfd > 2)
+			close(nullfd);
+	}
+
+	execl("/bin/sh", "sh", idle_callback, (char *)NULL);
+	_exit(127);
+}
+
 #ifndef HAVE_FORKPTY
 pid_t forkpty(int *amaster, char *name, struct termios *termp,
 	      struct winsize *winp);
@@ -140,17 +186,29 @@ unlink_socket(void)
 	unlink(sockname);
 }
 
-/* Signal */
+/* Signal handler for SIGCHLD and fatal signals. */
 static RETSIGTYPE
 die(int sig)
 {
-	/* Well, the child died. */
 	if (sig == SIGCHLD)
 	{
+		int status;
+		pid_t pid;
+
+		/* Reap all terminated children. Callback children are
+		** silently reaped; the pty child triggers cleanup via
+		** EOF on the pty fd in the main loop. */
+		while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
+		{
+			if (pid == the_pty.pid)
+			{
 #ifdef BROKEN_MASTER
-		/* Damn you Solaris! */
-		close(the_pty.fd);
+				/* Solaris: close master fd to trigger
+				** EOF detection in the main loop. */
+				close(the_pty.fd);
 #endif
+			}
+		}
 		return;
 	}
 	exit(1);
@@ -339,7 +397,7 @@ pty_activity(int s)
 	{
 		int status;
 
-		if (wait(&status) >= 0)
+		if (waitpid(the_pty.pid, &status, 0) >= 0)
 		{
 			if (WIFEXITED(status))
 				exit(WEXITSTATUS(status));
@@ -349,6 +407,13 @@ pty_activity(int s)
 
 	/* Capture output into the scrollback buffer for later replay. */
 	scrollback_push(buf, len);
+
+	/* Track output timestamp for idle detection. */
+	if (idle_timeout > 0)
+	{
+		last_pty_output = time(NULL);
+		idle_notified = 0;
+	}
 
 #ifdef BROKEN_MASTER
 	/* Get the current terminal settings. */
@@ -593,10 +658,15 @@ master_process(int s, char **argv, int waitattach, int statusfd)
 	/* Initialize the scrollback buffer for output replay. */
 	init_scrollback();
 
+	/* Initialize idle detection timestamp. */
+	if (idle_timeout > 0)
+		last_pty_output = time(NULL);
+
 	/* Loop forever. */
 	while (1)
 	{
 		int new_has_attached_client = 0;
+		struct timeval tv, *timeout = NULL;
 
 		/* Re-initialize the file descriptor set for select. */
 		FD_ZERO(&readfds);
@@ -636,12 +706,37 @@ master_process(int s, char **argv, int waitattach, int statusfd)
 			has_attached_client = new_has_attached_client;
 		}
 
+		/* Set a select timeout for idle detection polling. */
+		if (idle_timeout > 0 && idle_callback)
+		{
+			tv.tv_sec = 5;
+			tv.tv_usec = 0;
+			timeout = &tv;
+		}
+
 		/* Wait for something to happen. */
-		if (select(highest_fd + 1, &readfds, NULL, NULL, NULL) < 0)
+		if (select(highest_fd + 1, &readfds, NULL, NULL, timeout) < 0)
 		{
 			if (errno == EINTR || errno == EAGAIN)
 				continue;
 			exit(1);
+		}
+
+		/* Check idle state. */
+		if (idle_timeout > 0 && idle_callback && last_pty_output > 0)
+		{
+			time_t now = time(NULL);
+			int idle_secs = (int)(now - last_pty_output);
+
+			if (idle_secs >= idle_timeout && !idle_notified)
+			{
+				if (now - last_notify_time >= IDLE_COOLDOWN)
+				{
+					fire_idle_callback(idle_secs);
+					idle_notified = 1;
+					last_notify_time = now;
+				}
+			}
 		}
 
 		/* New client? */
@@ -667,9 +762,11 @@ master_main(char **argv, int waitattach, int dontfork)
 	int s;
 	pid_t pid;
 
-	/* Use a default redraw method if one hasn't been specified yet. */
+	/* Use a default redraw method if one hasn't been specified yet.
+	** REDRAW_NONE avoids injecting Ctrl-L and SIGWINCH on reattach,
+	** which can crash TUI programs like Node.js Ink-based tools. */
 	if (redraw_method == REDRAW_UNSPEC)
-		redraw_method = REDRAW_CTRL_L;
+		redraw_method = REDRAW_NONE;
 
 	/* Create the unix domain socket. */
 	s = create_socket(sockname);

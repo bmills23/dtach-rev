@@ -19,6 +19,7 @@
     Modifications Copyright (C) 2026 Bryan Mills
     - Added scrollback_size global and DEFAULT_SCROLLBACK_SIZE constant
     - Added MSG_CONTENT enum value
+    - Added idle_timeout and idle_callback for idle detection callbacks
     See https://github.com/bmills23/dtach-rev for details.
 */
 #ifndef dtach_h
@@ -104,6 +105,8 @@ extern int detach_char, no_suspend, redraw_method;
 extern struct termios orig_term;
 extern int dont_have_tty;
 extern size_t scrollback_size;
+extern int idle_timeout;
+extern char *idle_callback;
 
 enum
 {
