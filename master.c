@@ -471,8 +471,17 @@ client_activity(struct client *p)
 	/* Attach or detach from the program. */
 	else if (pkt.type == MSG_ATTACH)
 	{
-		/* Replay scrollback buffer so the client has context. */
+		/* Replay scrollback buffer so the client has context.
+		** Wrap the replay in OSC delimiters so smart clients can
+		** distinguish replayed content from live PTY output.
+		** Unknown OSC sequences are silently ignored by terminals. */
+		static const char replay_start[] =
+			"\033]dtach-rev;replay-start\007";
+		static const char replay_end[] =
+			"\033]dtach-rev;replay-end\007";
+		write_buf_or_fail(p->fd, replay_start, sizeof(replay_start) - 1);
 		scrollback_replay(p->fd);
+		write_buf_or_fail(p->fd, replay_end, sizeof(replay_end) - 1);
 		p->attached = 1;
 	}
 	else if (pkt.type == MSG_DETACH)
