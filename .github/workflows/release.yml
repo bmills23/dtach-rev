@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+            target: linux-x86_64
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+            target: linux-arm64
+          - os: macos-latest
+            arch: x86_64
+            target: macos-x86_64
+          - os: macos-latest
+            arch: arm64
+            target: macos-arm64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+
+      - name: Configure and build
+        run: |
+          ./configure
+          make clean
+          make
+          mv dtach dtach-rev
+
+      - name: Verify binary
+        run: ./dtach-rev --help || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dtach-rev-${{ matrix.target }}
+          path: dtach-rev
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          for dir in artifacts/dtach-rev-*/; do
+            target=$(basename "$dir")
+            cp "$dir/dtach-rev" "release/$target"
+            chmod +x "release/$target"
+          done
+          ls -la release/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            **Homebrew (macOS/Linux):**
+            ```
+            brew install bmills23/terminallm/dtach-rev
+            ```
+
+            **Quick install (any Linux/macOS):**
+            ```
+            curl -sSL https://raw.githubusercontent.com/bmills23/dtach-rev/master/install.sh | sh
+            ```
+
+            **Build from source:**
+            ```
+            git clone https://github.com/bmills23/dtach-rev.git
+            cd dtach-rev && ./configure && make && sudo make install
+            ```
