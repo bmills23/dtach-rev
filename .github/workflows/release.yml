@@ -13,18 +13,33 @@ jobs:
     strategy:
       matrix:
         include:
+          # Linux glibc (Ubuntu, Debian, Fedora, RHEL, etc.)
           - os: ubuntu-latest
             arch: x86_64
             target: linux-x86_64
+            static: false
           - os: ubuntu-24.04-arm
             arch: aarch64
             target: linux-arm64
+            static: false
+          # Linux static/musl (Alpine, NixOS, any distro)
+          - os: ubuntu-latest
+            arch: x86_64
+            target: linux-x86_64-static
+            static: true
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+            target: linux-arm64-static
+            static: true
+          # macOS (always dynamically linked — no musl issue)
           - os: macos-latest
             arch: x86_64
             target: macos-x86_64
+            static: false
           - os: macos-latest
             arch: arm64
             target: macos-arm64
+            static: false
 
     runs-on: ${{ matrix.os }}
 
@@ -32,18 +47,33 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install build dependencies (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && !matrix.static
         run: sudo apt-get update && sudo apt-get install -y build-essential
 
-      - name: Configure and build
+      - name: Install musl toolchain (Linux static)
+        if: runner.os == 'Linux' && matrix.static
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Configure and build (dynamic)
+        if: '!matrix.static'
         run: |
           ./configure
           make clean
           make
           mv dtach dtach-rev
 
+      - name: Configure and build (static/musl)
+        if: matrix.static
+        run: |
+          CC=musl-gcc ./configure
+          make clean
+          make CC=musl-gcc LDFLAGS="-static"
+          mv dtach dtach-rev
+
       - name: Verify binary
-        run: ./dtach-rev --help || true
+        run: |
+          ./dtach-rev --help || true
+          file dtach-rev
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -95,3 +125,8 @@ jobs:
             git clone https://github.com/bmills23/dtach-rev.git
             cd dtach-rev && ./configure && make && sudo make install
             ```
+
+            ### Binary variants
+            - `linux-x86_64` / `linux-arm64` — dynamically linked (glibc). Works on Ubuntu, Debian, Fedora, RHEL, etc.
+            - `linux-x86_64-static` / `linux-arm64-static` — statically linked (musl). Works on Alpine, NixOS, and any Linux distro.
+            - `macos-x86_64` / `macos-arm64` — macOS (Intel and Apple Silicon).

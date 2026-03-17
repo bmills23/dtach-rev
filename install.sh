@@ -31,12 +31,26 @@ case "$ARCH" in
     ;;
 esac
 
-ASSET="dtach-rev-${OS_TAG}-${ARCH_TAG}"
+# Detect libc — musl (Alpine, NixOS) vs glibc (Ubuntu, Debian, Fedora, etc.)
+# Use static binary on musl systems since glibc binaries won't work
+STATIC=""
+if [ "$OS_TAG" = "linux" ]; then
+  if ldd --version 2>&1 | grep -qi musl; then
+    STATIC="-static"
+    echo "Detected musl libc — using static binary"
+  elif ! ldd /bin/sh 2>/dev/null | grep -q "libc.so.6"; then
+    STATIC="-static"
+    echo "Could not confirm glibc — using static binary for safety"
+  fi
+fi
+
+ASSET="dtach-rev-${OS_TAG}-${ARCH_TAG}${STATIC}"
 LATEST_URL="https://github.com/$REPO/releases/latest/download/$ASSET"
 
 echo "dtach-rev installer"
 echo "  OS:   $OS ($OS_TAG)"
 echo "  Arch: $ARCH ($ARCH_TAG)"
+echo "  Libc: ${STATIC:-glibc (dynamic)}"
 echo "  URL:  $LATEST_URL"
 echo ""
 
@@ -45,6 +59,7 @@ TMP=$(mktemp)
 if command -v curl >/dev/null 2>&1; then
   curl -fsSL "$LATEST_URL" -o "$TMP" || {
     echo "Error: Download failed. No release found for $ASSET."
+    echo ""
     echo "Build from source instead:"
     echo "  git clone https://github.com/$REPO.git && cd dtach-rev && ./configure && make && sudo make install"
     rm -f "$TMP"
@@ -62,6 +77,16 @@ else
 fi
 
 chmod +x "$TMP"
+
+# Verify the binary actually runs (catches libc mismatch)
+if ! "$TMP" --help >/dev/null 2>&1; then
+  echo "Error: Downloaded binary failed to execute (likely libc mismatch)."
+  echo ""
+  echo "Build from source instead:"
+  echo "  git clone https://github.com/$REPO.git && cd dtach-rev && ./configure && make && sudo make install"
+  rm -f "$TMP"
+  exit 1
+fi
 
 # Install — try without sudo first, fall back to sudo
 if [ -w "$INSTALL_DIR" ]; then
