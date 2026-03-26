@@ -130,6 +130,55 @@ scrollback_replay(int fd)
 	}
 }
 
+/* Dump the last `max_bytes` of scrollback to a file for the idle callback. */
+static void
+scrollback_dump_tail(const char *path, size_t max_bytes)
+{
+	int fd;
+	size_t tail_start, tail_len;
+
+	if (!scrollback.data || scrollback.used == 0)
+		return;
+
+	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	if (fd < 0)
+		return;
+
+	/* How many bytes to dump (min of max_bytes and available data). */
+	tail_len = scrollback.used < max_bytes ? scrollback.used : max_bytes;
+
+	if (scrollback.used < scrollback.size)
+	{
+		/* Buffer hasn't wrapped — data is contiguous from 0. */
+		tail_start = scrollback.used - tail_len;
+		write(fd, scrollback.data + tail_start, tail_len);
+	}
+	else
+	{
+		/* Buffer has wrapped — newest data ends just before head.
+		   Walk back tail_len bytes from the write position. */
+		size_t end = scrollback.head; /* one past newest byte */
+		size_t start;
+		if (tail_len <= end)
+		{
+			/* Tail fits in the region before head. */
+			start = end - tail_len;
+			write(fd, scrollback.data + start, tail_len);
+		}
+		else
+		{
+			/* Tail wraps around the buffer boundary. */
+			size_t wrap = tail_len - end;
+			start = scrollback.size - wrap;
+			write(fd, scrollback.data + start, wrap);
+			if (end > 0)
+				write(fd, scrollback.data, end);
+		}
+	}
+
+	close(fd);
+}
+
 /* Idle detection state for callback notifications. */
 static time_t last_pty_output;
 static int idle_notified;
@@ -144,8 +193,16 @@ fire_idle_callback(int idle_secs)
 	char secs_str[32];
 	int nullfd;
 
+	char lastoutput_path[256];
+
 	if (!idle_callback)
 		return;
+
+	/* Dump last 1024 bytes of scrollback so the callback script can
+	   inspect recent terminal output (e.g., detect AI tool prompts). */
+	snprintf(lastoutput_path, sizeof(lastoutput_path),
+		 "%s.lastoutput", sockname);
+	scrollback_dump_tail(lastoutput_path, 1024);
 
 	pid = fork();
 	if (pid != 0)
@@ -158,6 +215,7 @@ fire_idle_callback(int idle_secs)
 	setenv("DTACH_IDLE_TIMEOUT", secs_str, 1);
 	setenv("DTACH_SOCKET", sockname, 1);
 	setenv("DTACH_EVENT", "idle", 1);
+	setenv("DTACH_LAST_OUTPUT", lastoutput_path, 1);
 
 	/* Redirect stdio to /dev/null. */
 	nullfd = open("/dev/null", O_RDWR);
